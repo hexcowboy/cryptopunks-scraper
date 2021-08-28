@@ -1,11 +1,13 @@
-import asyncio
-import aiohttp
-import re
+import requests
 import json
+import re
 from rich import print
+from rich.progress import Progress
+from signal import signal, SIGINT
+from sys import exit
 
 url: str = "https://www.larvalabs.com/cryptopunks/details/{id}"
-punks_range: range = range(1000)
+punks_range: range = range(10_000)
 with open("punks.json") as punks_json_file:
     punks: dict = json.load(punks_json_file)
 
@@ -18,30 +20,28 @@ species_regex = re.compile(
 attrs_regex = re.compile('<a href="/cryptopunks/search\?query=%22.*%22">(.*)</a>')
 
 
-def request_all_punks(session):
-    requests = []
-    for punk in punks_range:
-        if str(punk) in punks:
-            # Punk is already saved in the JSON file
-            continue
-        requests.append(
-            asyncio.create_task(session.get(url.format(id=punk), ssl=False))
-        )
-    return requests
+def handler(signal_received, frame):
+    print("Exiting gracefully")
+    with open("punks.json", "w") as file:
+        json.dump(punks, file)
+        print(f"Saved all punks to {file.name}")
+    exit(0)
 
 
-async def scrape_punks():
-    async with aiohttp.ClientSession() as session:
-        punk_request = request_all_punks(session)
-        punk_requests = await asyncio.gather(*punk_request)
-        for request in punk_requests:
-            response_text = await request.text()
+def scrape_punks():
+    with Progress() as progress:
+        task = progress.add_task("Scraping Punks", total=len(punks_range))
+        for punk in punks_range:
+            if str(punk) in punks:
+                # Punk is already saved in the JSON file
+                continue
 
             # Get the punk ID from regex searching the page
             try:
+                response = requests.get(url.format(id=punk))
+                response_text = response.text
                 punk = int(id_regex.findall(response_text)[0])
-            except IndexError:
-                print("Too many requests... Use another connection")
+            except:
                 break
             punks[punk] = {}
 
@@ -55,9 +55,14 @@ async def scrape_punks():
             for attr in attrs:
                 punks[punk]["attributes"].append(attr)
 
+            progress.update(task, completed=punk, description=f"Scraping Punk #{punk}")
 
-asyncio.run(scrape_punks())
+        handler(SIGINT, scrape_punks)
 
-with open("punks.json", "w") as file:
-    json.dump(punks, file)
-    print(f"Saved all punks to {file.name}")
+
+if __name__ == "__main__":
+    # Tell Python to run the handler() function when SIGINT is recieved
+    signal(SIGINT, handler)
+
+    print("Running. Press CTRL-C to gracefully exit.")
+    scrape_punks()
